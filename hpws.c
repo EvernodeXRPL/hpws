@@ -64,6 +64,7 @@
 #include <netinet/tcp.h>
 #include <signal.h>
 #include "ipban.h"
+#include "visapass.h"
 
 pid_t parent_pid = -1; // we set this on startup
 pid_t my_pid = -1; // set at various points throughout the program, always the currently executing process
@@ -184,6 +185,7 @@ int main(int argc, char **argv)
     size_t client_addr_len = sizeof(client_addr); memset(&client_addr, 0, client_addr_len);
     int client_fd = -1, control_fd[2] = {-1,-2}, master_control_fd = -1, port = 443, max_con = 512;
     int arg_control_fd_2 = -1; // this is passed in connect mode at the commandline and becomes control_fd[1]
+    bool visa_req = false;
     int  max_con_ip = 5, is_server = 1, is_ipv6 = 0;
     int urand_fd = -1;
     char ip[40]; ip[0] = '\0';
@@ -252,6 +254,7 @@ int main(int argc, char **argv)
             {"ipv6",        no_argument,        0,      1 },
             {"get",         required_argument,  0,      1 },
             {"cntlfd2",     required_argument,  0,      1 },
+            {"visareq",     no_argument,        0,      1 },
             {0,             0,                  0,      0 }
         };
 
@@ -303,6 +306,9 @@ int main(int argc, char **argv)
                 case 12:
                     PARSE_INT_OR_EXIT(optarg, "cntlfd2", arg_control_fd_2);
                     continue;
+                case 13:
+                    visa_req = true;
+                    continue;
                 default:
                     continue;
             }
@@ -339,6 +345,7 @@ int main(int argc, char **argv)
         // RH todo: provide a way for listen loop (server) process to gracefully close and clean up fds
 
         // listen in an accept loop
+        int visa_sock = -1;
         int listen_sock = -1;
         {
             union {
@@ -352,14 +359,25 @@ int main(int argc, char **argv)
                 addr.sin.sin_family = AF_INET;
                 addr.sin.sin_port = htons(port);
                 addr.sin.sin_addr.s_addr = htonl(INADDR_ANY);
-                listen_sock = socket(AF_INET, SOCK_STREAM, 0);
             } else {
                 addr.sin6.sin6_family = AF_INET6;
                 addr.sin6.sin6_addr = in6addr_any;
                 addr.sin6.sin6_port = htons(port);
-                listen_sock = socket(AF_INET6, SOCK_STREAM, 0);
             }
 
+            if (visa_req)
+            {
+                visa_sock = is_ipv6 ? socket(AF_INET6, SOCK_DGRAM, 0) : socket(AF_INET, SOCK_DGRAM, 0);
+                if (visa_sock < 0) {
+                    perror("Unable to create udp socket");
+                    ABEND(70, "could not create udp socket");
+                }
+
+                if (bind(visa_sock, (struct sockaddr*)&(addr.sa), sizeof(addr)) < 0)
+                    ABEND(72, "could not bind stocket for visa");
+            }
+
+            listen_sock = is_ipv6 ? socket(AF_INET6, SOCK_STREAM, 0) : socket(AF_INET, SOCK_STREAM, 0);
             if (listen_sock < 0) {
                 perror("Unable to create socket");
                 ABEND(70, "could not create listen socket");
@@ -437,6 +455,62 @@ int main(int argc, char **argv)
                 }
             }
 
+            // Read any incoming visa requests.
+            {
+                if (visa_req)
+                {
+                    fdset[0].fd = visa_sock;
+                    fdset[0].events = POLLIN;
+                    
+                    while(true)
+                    {
+                        const int visa_poll = poll(fdset, 1, 1);
+
+                        if (visa_poll == -1)
+                        {
+                            perror("visa request poll");
+                            exit(1);
+                        }
+
+                        if (visa_poll == 0) // No incoming visa request.
+                            break;
+
+                        unsigned char visa_req[32];
+                        int bytes_read = recvfrom(visa_sock, visa_req, sizeof(visa_req), MSG_WAITALL, (struct sockaddr*)&client_addr, &client_addr_len);
+                        if (bytes_read < 1) {
+                            fprintf(stderr, "Received invalid visa request\n");
+                            continue;
+                        }
+
+                        if (strcmp(visa_req, "request") == 0)
+                        {
+                            const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
+                            const uint32_t ttl_sec = 60; // TTL seconds.
+                            const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
+                            visapass_add(addr, ttl_sec, ipv4);
+                            unsigned char visa_approval[] = "approve";
+                            sendto(visa_sock, visa_approval, strlen(visa_approval), MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
+
+                            //////////////
+                            printf("=======================================================Approval sent.=======================================================\n");
+                            //////////////
+                        }
+                        else
+                        {
+                            unsigned char visa_reject[32] = "reject";
+                            sendto(visa_sock, visa_reject, strlen(visa_reject), MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
+                            fprintf(stderr, "Received invalid visa challenge\n");
+
+                            //////////////
+                            printf("=======================================================Rejection sent.=======================================================\n");
+                            //////////////
+
+                            continue;
+                        }
+                    }
+                }
+            }
+
             // Check for incoming connections to accept.
             {
                 fdset[0].fd = listen_sock;
@@ -468,10 +542,27 @@ int main(int argc, char **argv)
                 exit(EXIT_FAILURE);
             }
 
+            const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
+            const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
+
+            // Check whether visa is approved for this ip.
+            {
+                if (visa_req)
+                {
+                    if (!visapass_is_passed(addr, ipv4))
+                    {
+                        fprintf(stderr, "Client connection not approved\n");
+                        close(client_fd);
+                        continue;
+                    }
+                    
+                    // Remove the visa from visa passes.
+                    visapass_remove(addr, ipv4);
+                }
+            }
+
             // Check whether this ip is banned.
             {
-                const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
-                const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
                 if (ipban_is_banned(addr, ipv4))
                 {
                     // Reject the client and go back to accept loop.
@@ -624,6 +715,39 @@ int main(int argc, char **argv)
 
         if (DEBUG)
             fprintf(stderr, "[HPWS.C PID+%08X] ip: %.*s\n", my_pid, sizeof(connect_ip), connect_ip);
+
+        if (visa_req)
+        {
+            client_fd = socket( res->ai_family, SOCK_DGRAM, 0 );
+
+            unsigned char visa_request[] = "request";
+            if (sendto(client_fd, visa_request, strlen(visa_request), MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
+            {
+                fprintf(stderr, "[HPWS.C PID+%08X] Unable to request visa, errno: %d\n", my_pid, errno);
+                ABEND(93, "can't request");
+            }
+
+            //////////////
+            printf("=======================================================Request : %s.=======================================================\n", connect_ip);
+            //////////////
+
+            unsigned char visa_response[32];
+            int bytes_read = recvfrom(client_fd, visa_response, sizeof(visa_response), MSG_WAITALL, (struct sockaddr*)&client_addr, &client_addr_len);
+            if (bytes_read < 1) {
+                fprintf(stderr, "[HPWS.C PID+%08X] Invalid to visa response, errno: %d\n", my_pid, errno);
+                ABEND(93, "can't request");
+            }
+
+            //////////////
+            printf("=======================================================Response : %s=======================================================\n", visa_response);
+            //////////////
+
+            if (strcmp(visa_response, "approve") != 0)
+            {
+                fprintf(stderr, "[HPWS.C PID+%08X] Visa rejected, errno: %d\n", my_pid, errno);
+                ABEND(93, "visa rejected");
+            }
+        }
 
         client_fd = socket( res->ai_family, SOCK_STREAM, 0 );
         if (connect(client_fd, (struct sockaddr *)&client_addr, client_addr_len))

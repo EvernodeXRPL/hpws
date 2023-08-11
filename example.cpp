@@ -31,7 +31,7 @@ int main(int argc, char** argv) {
 }
 
 int example_client() {
-    auto accept_result = hpws::client::connect ( "hpws", 16*1024*1024, "localhost", 8080, "/", {} );
+    auto accept_result = hpws::client::connect ( "hpws", 16*1024*1024, "localhost", 8080, "/", true, {} );
     
     if (std::holds_alternative<hpws::client>(accept_result)) {
         printf("[EXAMPLE.CPP] a client connected\n");
@@ -73,7 +73,7 @@ int example_client() {
 
 
 int example_server() {
-    auto server = hpws::server::create ( "hpws", 16*1024*1024, 8080, 512, 2, "cert.pem", "key.pem", {} );
+    auto server = hpws::server::create ( "hpws", 16*1024*1024, 8080, 512, 2, "cert.pem", "key.pem", true, {} );
 
     if ( std::holds_alternative<hpws::server>(server) ) {
         fprintf(stderr, "[EXAMPLE.CPP] we got a server\n");
