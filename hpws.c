@@ -370,11 +370,11 @@ int main(int argc, char **argv)
                 visa_sock = is_ipv6 ? socket(AF_INET6, SOCK_DGRAM, 0) : socket(AF_INET, SOCK_DGRAM, 0);
                 if (visa_sock < 0) {
                     perror("Unable to create udp socket");
-                    ABEND(70, "could not create udp socket");
+                    ABEND(68, "could not create udp socket");
                 }
 
                 if (bind(visa_sock, (struct sockaddr*)&(addr.sa), sizeof(addr)) < 0)
-                    ABEND(72, "could not bind stocket for visa");
+                    ABEND(69, "could not bind socket for visa");
             }
 
             listen_sock = is_ipv6 ? socket(AF_INET6, SOCK_STREAM, 0) : socket(AF_INET, SOCK_STREAM, 0);
@@ -387,7 +387,7 @@ int main(int argc, char **argv)
             setsockopt(listen_sock, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
 
             if (bind(listen_sock, (struct sockaddr*)&(addr.sa), sizeof(addr)) < 0)
-                ABEND(72, "could not bind stocket for listen");
+                ABEND(72, "could not bind socket for listen");
 
             if (listen(listen_sock, 1) < 0)
                 ABEND(74, "listen() failed");
@@ -724,7 +724,8 @@ int main(int argc, char **argv)
             if (sendto(client_fd, visa_request, strlen(visa_request), MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Unable to request visa, errno: %d\n", my_pid, errno);
-                ABEND(93, "can't request");
+                close(client_fd);
+                ABEND(93, "could not send the visa request");
             }
 
             //////////////
@@ -735,7 +736,8 @@ int main(int argc, char **argv)
             int bytes_read = recvfrom(client_fd, visa_response, sizeof(visa_response), MSG_WAITALL, (struct sockaddr*)&client_addr, &client_addr_len);
             if (bytes_read < 1) {
                 fprintf(stderr, "[HPWS.C PID+%08X] Invalid to visa response, errno: %d\n", my_pid, errno);
-                ABEND(93, "can't request");
+                close(client_fd);
+                ABEND(94, "could not receive the visa response");
             }
 
             //////////////
@@ -745,15 +747,18 @@ int main(int argc, char **argv)
             if (strcmp(visa_response, "approve") != 0)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Visa rejected, errno: %d\n", my_pid, errno);
-                ABEND(93, "visa rejected");
+                close(client_fd);
+                ABEND(95, "visa rejected from the server");
             }
+
+            close(client_fd);
         }
 
         client_fd = socket( res->ai_family, SOCK_STREAM, 0 );
         if (connect(client_fd, (struct sockaddr *)&client_addr, client_addr_len))
         {
             fprintf(stderr, "[HPWS.C PID+%08X] Unable to connect, errno: %d\n", my_pid, errno);
-            ABEND(93, "can't connect");
+            ABEND(96, "can't connect");
         }
 
         // Set TCP no delay so OS packet buffering doesn't happen.
