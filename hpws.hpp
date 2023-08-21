@@ -340,7 +340,7 @@ namespace hpws
             int buffer_fd[4] = {-1, -1, -1, -1};
             void *mapping[4] = {NULL, NULL, NULL, NULL};
             int pid = -1;
-            int count_args = 14 + argv.size();
+            int count_args = 14 + (visa_data.has_value() ? 2 : 0) + argv.size();
             char const **argv_pass = NULL;
 
             if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd))
@@ -898,7 +898,7 @@ namespace hpws
             const char *error_msg = NULL;
             int fd[2] = {-1, -1};
             pid_t pid = -1;
-            int count_args = 17 + argv.size();
+            int count_args = 16 + (visa_data.has_value() ? 2 : 0) + argv.size();
             char const **argv_pass = NULL;
 
             if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd))
