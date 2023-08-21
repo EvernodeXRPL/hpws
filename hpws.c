@@ -39,6 +39,7 @@
 #define CLIENT_SHUTDOWN_CYCLES 3
 #define CLIENT_SHUTDOWN_FINAL_TIMEOUT 5000 /* microseconds */
 #define HPWS_VERSION "0.9.0"
+#define POW_DIFFICULTY 6
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -101,6 +102,8 @@ pid_t my_pid = -1; // set at various points throughout the program, always the c
 #define BASE64_LEN( x ) ( x * 4 / 3 + 5 )
 unsigned char * base64_encode( unsigned char* src, size_t len, unsigned char* out, size_t out_len );
 void block_xor(unsigned char* buf, uint64_t start, uint64_t end, unsigned char* masking_key_x3, uint8_t key_offset_);
+void calculate_pow(const unsigned char *data, const size_t data_len, unsigned char *hash, int *nonce);
+bool verify_pow(const unsigned char *hash, const unsigned char *data, const size_t data_len, const int nonce);
 
 
 #define UTF8_ACCEPT 0
@@ -185,12 +188,12 @@ int main(int argc, char **argv)
     size_t client_addr_len = sizeof(client_addr); memset(&client_addr, 0, client_addr_len);
     int client_fd = -1, control_fd[2] = {-1,-2}, master_control_fd = -1, port = 443, max_con = 512;
     int arg_control_fd_2 = -1; // this is passed in connect mode at the commandline and becomes control_fd[1]
-    bool visa_req = false;
-    int  max_con_ip = 5, is_server = 1, is_ipv6 = 0;
+    int  max_con_ip = 5, is_server = 1, is_ipv6 = 0, visa_required = 0;
     int urand_fd = -1;
     char ip[40]; ip[0] = '\0';
     char host[256]; host[0] = '\0';             // this is the host as parsed from the cmdline when in client mode
     char get[256]; get[0] = '/'; get[1] = '\0'; // this is the uri to request in the upgrade message when connecting
+    char visa_data[256]; visa_data[0] = '\0';   // this is the visa data for pow calculation when connecting with visa
     int client_shutdown = 0;
 
     // websocket variables are prefixed with ws_
@@ -254,7 +257,7 @@ int main(int argc, char **argv)
             {"ipv6",        no_argument,        0,      1 },
             {"get",         required_argument,  0,      1 },
             {"cntlfd2",     required_argument,  0,      1 },
-            {"visareq",     no_argument,        0,      1 },
+            {"visadata",    required_argument,  0,      1 },
             {0,             0,                  0,      0 }
         };
 
@@ -307,7 +310,7 @@ int main(int argc, char **argv)
                     PARSE_INT_OR_EXIT(optarg, "cntlfd2", arg_control_fd_2);
                     continue;
                 case 13:
-                    visa_req = true;
+                    strncpy(visa_data, optarg, sizeof(visa_data));
                     continue;
                 default:
                     continue;
@@ -334,6 +337,8 @@ int main(int argc, char **argv)
 
         if (!is_server && arg_control_fd_2 == -1)
             ABEND(41, "must specify --cntlfd2 <fd> when using connect mode, this is the hpcore->hpws line");
+
+        visa_required = strlen(visa_data) > 0;
     }
 /*
 ** --------------------------------------------------------------------------------------------------------------------
@@ -365,7 +370,7 @@ int main(int argc, char **argv)
                 addr.sin6.sin6_port = htons(port);
             }
 
-            if (visa_req)
+            if (visa_required)
             {
                 visa_sock = is_ipv6 ? socket(AF_INET6, SOCK_DGRAM, 0) : socket(AF_INET, SOCK_DGRAM, 0);
                 if (visa_sock < 0) {
@@ -457,7 +462,7 @@ int main(int argc, char **argv)
 
             // Read any incoming visa requests.
             {
-                if (visa_req)
+                if (visa_required)
                 {
                     fdset[0].fd = visa_sock;
                     fdset[0].events = POLLIN;
@@ -475,14 +480,15 @@ int main(int argc, char **argv)
                         if (visa_poll == 0) // No incoming visa request.
                             break;
 
-                        unsigned char visa_req[32];
-                        int bytes_read = recvfrom(visa_sock, visa_req, sizeof(visa_req), MSG_WAITALL, (struct sockaddr*)&client_addr, &client_addr_len);
+                        unsigned char visa_request[36];
+                        int bytes_read = recvfrom(visa_sock, &visa_request, sizeof(visa_request), MSG_WAITALL, (struct sockaddr*)&client_addr, &client_addr_len);
                         if (bytes_read < 1) {
-                            fprintf(stderr, "Received invalid visa request\n");
+                            fprintf(stderr, "Received invalid visa request %d\n", errno);
                             continue;
                         }
 
-                        if (strcmp(visa_req, "request") == 0)
+                        // Process received data (nonce and hash)
+                        if (verify_pow(&visa_request, &visa_data, sizeof(visa_data), *(int *)((unsigned char *)(&visa_request) + 32)))
                         {
                             const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
                             const uint32_t ttl_sec = 60; // TTL seconds.
@@ -547,7 +553,7 @@ int main(int argc, char **argv)
 
             // Check whether visa is approved for this ip.
             {
-                if (visa_req)
+                if (visa_required)
                 {
                     if (!visapass_is_passed(addr, ipv4))
                     {
@@ -716,12 +722,15 @@ int main(int argc, char **argv)
         if (DEBUG)
             fprintf(stderr, "[HPWS.C PID+%08X] ip: %.*s\n", my_pid, sizeof(connect_ip), connect_ip);
 
-        if (visa_req)
+        if (visa_required)
         {
             client_fd = socket( res->ai_family, SOCK_DGRAM, 0 );
 
-            unsigned char visa_request[] = "request";
-            if (sendto(client_fd, visa_request, strlen(visa_request), MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
+            unsigned char visa_request[36];
+            *(int *)((unsigned char *)(visa_request) + 32) = 0;
+            calculate_pow(&visa_data, sizeof(visa_data), &visa_request, (int *)((unsigned char *)(visa_request) + 32));
+            
+            if (sendto(client_fd, visa_request, sizeof(visa_request), MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Unable to request visa, errno: %d\n", my_pid, errno);
                 close(client_fd);
@@ -2130,4 +2139,65 @@ void block_xor(unsigned char* restrict buf, uint64_t start, uint64_t end, unsign
     } else
         for (; i < end; ++i)
              *(buf + i) ^= ((unsigned char*)masking_key_x3)[ (i + key_offset_) % 4];
+}
+
+void calculate_pow(const unsigned char *data, const size_t data_len, unsigned char *hash, int *nonce)
+{
+    *nonce = 0;
+
+    // Proof-of-work loop
+    while (1)
+    {
+        unsigned char hash_buf[data_len + sizeof(*nonce)];
+        memcpy(&hash_buf, data, data_len);
+        memcpy(((unsigned char *)(&hash_buf) + data_len), nonce, sizeof(*nonce));
+
+        // Calculate SHA-256 hash
+        SHA256(hash_buf, sizeof(hash_buf), hash);
+
+        int i = 0;
+        while (i < POW_DIFFICULTY)
+        {
+            const uint8_t *p = (uint8_t *)((uint8_t *)hash + (i / 2));
+            if (i % 2 == 0 ? (*p) >> 4 != 0 : (*p) != 0)
+                break;
+            i++;
+        }
+
+        if (i == POW_DIFFICULTY)
+            break;
+
+        (*nonce)++;
+    }
+}
+
+bool verify_pow(const unsigned char *hash, const unsigned char *data, const size_t data_len, const int nonce)
+{
+    // Verify leading zeros.
+    int i = 0;
+    while (i < POW_DIFFICULTY)
+    {
+        const uint8_t *p = (uint8_t *)((uint8_t *)hash + (i / 2));
+        if (i % 2 == 0 ? (*p) >> 4 != 0 : (*p) != 0)
+            break;
+        i++;
+    }
+
+    if (i < POW_DIFFICULTY)
+        return false;
+
+    unsigned char hash_buf[data_len + sizeof(nonce)];
+    memcpy(&hash_buf, data, data_len);
+    memcpy(((unsigned char *)(&hash_buf) + data_len), &nonce, sizeof(nonce));
+
+    unsigned char hash_calc[SHA256_DIGEST_LENGTH];
+
+    // Calculate SHA-256 hash.
+    SHA256(hash_buf, sizeof(hash_buf), (unsigned char *)&hash_calc);
+
+    // Verify hash.
+    if (memcmp((unsigned char *)hash, &hash_calc, sizeof(hash_calc)) == 0)
+        return true;
+
+    return false;
 }

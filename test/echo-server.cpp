@@ -27,7 +27,7 @@ int main(int argc, char **argv)
 
 int echo_server()
 {
-    auto server = hpws::server::create("hpws", 16 * 1024 * 1024, 8080, 512, 512, "cert.pem", "key.pem", true, {});
+    auto server = hpws::server::create("hpws", 16 * 1024 * 1024, 8080, 512, 512, "cert.pem", "key.pem", "visa_data", {});
 
     if (std::holds_alternative<hpws::server>(server))
     {
@@ -51,9 +51,9 @@ int echo_server()
                 PRINT_HPWS_ERROR(accept_result);
                 continue;
             }
-            
+
             ([](hpws::client client)
-            {
+             {
 
                 for (;;)
                 {
@@ -72,8 +72,7 @@ int echo_server()
 
                     // Reply with the same message we got.
                     client.write(in_msg);
-                }
-            })(std::get<hpws::client>(std::move(accept_result)));
+                } })(std::get<hpws::client>(std::move(accept_result)));
         }
     }
     else if (std::holds_alternative<hpws::error>(server))
