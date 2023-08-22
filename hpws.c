@@ -39,7 +39,7 @@
 #define CLIENT_SHUTDOWN_CYCLES 3
 #define CLIENT_SHUTDOWN_FINAL_TIMEOUT 5000 /* microseconds */
 #define HPWS_VERSION "0.9.0"
-#define POW_DIFFICULTY 6
+#define POW_DIFFICULTY 5
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -496,20 +496,12 @@ int main(int argc, char **argv)
                             visapass_add(addr, ttl_sec, ipv4);
                             unsigned char visa_approval[] = "approve";
                             sendto(visa_sock, visa_approval, strlen(visa_approval), MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
-
-                            //////////////
-                            printf("=======================================================Approval sent.=======================================================\n");
-                            //////////////
                         }
                         else
                         {
                             unsigned char visa_reject[32] = "reject";
                             sendto(visa_sock, visa_reject, strlen(visa_reject), MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
                             fprintf(stderr, "Received invalid visa challenge\n");
-
-                            //////////////
-                            printf("=======================================================Rejection sent.=======================================================\n");
-                            //////////////
 
                             continue;
                         }
@@ -737,10 +729,6 @@ int main(int argc, char **argv)
                 ABEND(93, "could not send the visa request");
             }
 
-            //////////////
-            printf("=======================================================Request : %s.=======================================================\n", connect_ip);
-            //////////////
-
             unsigned char visa_response[32];
             int bytes_read = recvfrom(client_fd, visa_response, sizeof(visa_response), MSG_WAITALL, (struct sockaddr*)&client_addr, &client_addr_len);
             if (bytes_read < 1) {
@@ -748,10 +736,6 @@ int main(int argc, char **argv)
                 close(client_fd);
                 ABEND(94, "could not receive the visa response");
             }
-
-            //////////////
-            printf("=======================================================Response : %s=======================================================\n", visa_response);
-            //////////////
 
             if (strcmp(visa_response, "approve") != 0)
             {
