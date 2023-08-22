@@ -487,20 +487,22 @@ int main(int argc, char **argv)
                             continue;
                         }
 
-                        // Process received data (nonce and hash)
+                        // Check for the proof of work in the received data and send approval or rejection accordingly.
+                        uint8_t response = 0;
                         if (verify_pow(&visa_request, &visa_data, sizeof(visa_data), *(int *)((unsigned char *)(&visa_request) + 32)))
                         {
                             const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
                             const uint32_t ttl_sec = 60; // TTL seconds.
                             const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
                             visapass_add(addr, ttl_sec, ipv4);
-                            unsigned char visa_approval[] = "approve";
-                            sendto(visa_sock, visa_approval, strlen(visa_approval), MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
+                            // Send approval if pow is valid.
+                            response = 1;
+                            sendto(visa_sock, (uint8_t *)&response, sizeof(response), MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
                         }
                         else
                         {
-                            unsigned char visa_reject[32] = "reject";
-                            sendto(visa_sock, visa_reject, strlen(visa_reject), MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
+                            // Send rejection if pow is invalid.
+                            sendto(visa_sock, (uint8_t *)&response, sizeof(response), MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
                             fprintf(stderr, "Received invalid visa challenge\n");
 
                             continue;
@@ -547,6 +549,7 @@ int main(int argc, char **argv)
             {
                 if (visa_required)
                 {
+                    // Ban if this ip is not whitelisted from visa approval.
                     if (!visapass_is_passed(addr, ipv4))
                     {
                         fprintf(stderr, "Client connection not approved\n");
@@ -718,6 +721,7 @@ int main(int argc, char **argv)
         {
             client_fd = socket( res->ai_family, SOCK_DGRAM, 0 );
 
+            // Create visa request with the pow and send to the server.
             unsigned char visa_request[36];
             *(int *)((unsigned char *)(visa_request) + 32) = 0;
             calculate_pow(&visa_data, sizeof(visa_data), &visa_request, (int *)((unsigned char *)(visa_request) + 32));
@@ -729,15 +733,16 @@ int main(int argc, char **argv)
                 ABEND(93, "could not send the visa request");
             }
 
-            unsigned char visa_response[32];
-            int bytes_read = recvfrom(client_fd, visa_response, sizeof(visa_response), MSG_WAITALL, (struct sockaddr*)&client_addr, &client_addr_len);
+            uint8_t visa_response;
+            int bytes_read = recvfrom(client_fd, (uint8_t *)&visa_response, sizeof(visa_response), MSG_WAITALL, (struct sockaddr*)&client_addr, &client_addr_len);
             if (bytes_read < 1) {
                 fprintf(stderr, "[HPWS.C PID+%08X] Invalid to visa response, errno: %d\n", my_pid, errno);
                 close(client_fd);
                 ABEND(94, "could not receive the visa response");
             }
 
-            if (strcmp(visa_response, "approve") != 0)
+            // Skip tcp connection if visa is rejected.
+            if (visa_response != 1)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Visa rejected, errno: %d\n", my_pid, errno);
                 close(client_fd);
