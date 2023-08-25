@@ -8,12 +8,15 @@
 #define __VISAPASS_SLOT_COUNT 100
 #define __IP_V4 1
 #define __IP_V6 2
+#define CHALLENGE_SIZE 32
 
 struct __visapass_slot
 {
-    uint8_t type;     // 0 = none, 1 = ipv4, 2 = ipv6
-    time_t expire;    // Epoch seconds at which the visa will expire.
-    uint32_t addr[4]; // In ipv4 first element will be filled. ipv6 will fill all 4 elements.
+    uint8_t type;                            // 0 = none, 1 = ipv4, 2 = ipv6
+    time_t expire;                           // Epoch seconds at which the visa will expire.
+    uint32_t addr[4];                        // In ipv4 first element will be filled. ipv6 will fill all 4 elements.
+    unsigned char challenge[CHALLENGE_SIZE]; // Issued visa challenge.
+    bool passed;                             // Whether visa is passed.
 };
 
 static struct __visapass_slot __visapasses[__VISAPASS_SLOT_COUNT];
@@ -71,7 +74,7 @@ struct __visapass_slot *__visapass_find(const uint32_t *addr, const uint8_t type
 /**
  * @return 0 if success. -1 if failure (due to all slots being filled).
  */
-int visapass_add(const uint32_t *addr, const uint32_t ttl_sec, const bool ipv4)
+int visapass_add(const uint32_t *addr, const uint32_t ttl_sec, const bool ipv4, const unsigned char *challenge)
 {
     const uint8_t type = (ipv4 ? __IP_V4 : __IP_V6);
 
@@ -95,6 +98,8 @@ int visapass_add(const uint32_t *addr, const uint32_t ttl_sec, const bool ipv4)
     {
         slot->type = type;
         slot->expire = time(NULL) + ttl_sec;
+        slot->passed = false;
+        memcpy(slot->challenge, challenge, CHALLENGE_SIZE);
 
         if (type == __IP_V4)
         {
@@ -114,6 +119,13 @@ int visapass_add(const uint32_t *addr, const uint32_t ttl_sec, const bool ipv4)
     return -1;
 }
 
+void visapass_pass(const uint32_t *addr, const bool ipv4)
+{
+    struct __visapass_slot *slot = __visapass_find(addr, (ipv4 ? __IP_V4 : __IP_V6));
+    if (slot)
+        slot->passed = true;
+}
+
 void visapass_remove(const uint32_t *addr, const bool ipv4)
 {
     struct __visapass_slot *slot = __visapass_find(addr, (ipv4 ? __IP_V4 : __IP_V6));
@@ -123,7 +135,16 @@ void visapass_remove(const uint32_t *addr, const bool ipv4)
 
 bool visapass_is_passed(const uint32_t *addr, const bool ipv4)
 {
-    return __visapass_find(addr, (ipv4 ? __IP_V4 : __IP_V6)) != NULL;
+    struct __visapass_slot *slot = __visapass_find(addr, (ipv4 ? __IP_V4 : __IP_V6));
+    return slot->passed;
+}
+
+const unsigned char *visapass_get_challenge(const uint32_t *addr, const bool ipv4)
+{
+    struct __visapass_slot *slot = __visapass_find(addr, (ipv4 ? __IP_V4 : __IP_V6));
+    if (slot)
+        return (const unsigned char *)slot->challenge;
+    return NULL;
 }
 
 #endif
