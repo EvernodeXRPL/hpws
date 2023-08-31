@@ -27,7 +27,7 @@ int main(int argc, char **argv)
 
 int echo_server()
 {
-    auto server = hpws::server::create("hpws", 16 * 1024 * 1024, 8080, 512, 512, "cert.pem", "key.pem", "visa_data", {});
+    auto server = hpws::server::create("hpws", 16 * 1024 * 1024, 8080, 512, 512, "cert.pem", "key.pem", {});
 
     if (std::holds_alternative<hpws::server>(server))
     {
