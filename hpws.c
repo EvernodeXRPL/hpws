@@ -46,11 +46,11 @@
 #define UDP_MSG_CHALLENGE 3
 #define UDP_MSG_VISA_RES 4
 #define VISA_MSG_ACCEPTED 1
-#define VISA_MSG_REJECTED 2
-#define VISA_MSG_FAILED 3
-#define VISA_MSG_EXPIRED 4
-#define VISA_MSG_TOO_LARGE 5
-#define VISA_MSG_VERSION_MISMATCHED 6
+#define VISA_MSG_REJECTED 120
+#define VISA_MSG_FAILED 121
+#define VISA_MSG_EXPIRED 122
+#define VISA_MSG_TOO_LARGE 123
+#define VISA_MSG_VERSION_MISMATCHED 124
 #define VISA_EXPIRY_TIME_SECONDS 60
 #define _GNU_SOURCE
 
@@ -491,7 +491,6 @@ int main(int argc, char **argv)
                     while(true)
                     {
                         const int visa_poll = poll(fdset, 1, 1);
-                        bool is_too_large=false;
                         // 0 if no error
                         int err_no = 0;
 
@@ -500,8 +499,7 @@ int main(int argc, char **argv)
                             perror("visa request poll");
                             exit(1);
                         }
-
-                        if (visa_poll == 0) // No incoming visa request.
+                        else if (visa_poll == 0) // No incoming visa request.
                             break;
 
                         int bytes_read = recvfrom(visa_sock, &visa_msg_buf, sizeof(visa_msg_buf), MSG_WAITALL, (struct sockaddr *)&client_addr, &client_addr_len);
@@ -510,10 +508,9 @@ int main(int argc, char **argv)
                             fprintf(stderr, "Received invalid visa request %d\n", errno);
                             continue;
                         }
-                        if (bytes_read > sizeof(visa_msg_buf)){
-                            is_too_large = true;
+                        else if (bytes_read > sizeof(visa_msg_buf)){
                             // if message is too large
-                            err_no = 2;
+                            err_no = VISA_MSG_TOO_LARGE;
                             fprintf(stderr, "Visa request is too large %d\n", errno);
                             continue;
                         }
