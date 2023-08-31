@@ -113,7 +113,7 @@ unsigned char * base64_encode( unsigned char* src, size_t len, unsigned char* ou
 void block_xor(unsigned char* buf, uint64_t start, uint64_t end, unsigned char* masking_key_x3, uint8_t key_offset_);
 void calculate_pow(const unsigned char *data, const size_t data_len, unsigned char *hash, int *nonce);
 bool verify_pow(const unsigned char *hash, const unsigned char *data, const size_t data_len, const int nonce);
-
+void generate_hashed_random_number(uint32_t random_number, unsigned char output[CHALLENGE_SIZE]);
 
 #define UTF8_ACCEPT 0
 #define UTF8_REJECT 1
@@ -478,10 +478,12 @@ int main(int argc, char **argv)
                 {
                     fdset[0].fd = visa_sock;
                     fdset[0].events = POLLIN;
+
                     
                     while(true)
                     {
                         const int visa_poll = poll(fdset, 1, 1);
+                        bool is_too_large=false;
 
                         if (visa_poll == -1)
                         {
@@ -497,6 +499,13 @@ int main(int argc, char **argv)
                             fprintf(stderr, "Received invalid visa request %d\n", errno);
                             continue;
                         }
+                        if (bytes_read > 261){
+                            is_too_large = true;
+                            printf("Value of bytes_read: %d\n", bytes_read);
+                            fprintf(stderr, "Visa request is too large %d\n", errno);
+                            continue;
+                        }
+                        printf("Value of bytes_read: %d\n", bytes_read);
 
                         const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
                         const uint32_t ttl_sec = 60; // TTL seconds.
@@ -517,19 +526,39 @@ int main(int argc, char **argv)
 
                             if (is_too_old)
                                 *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_EXPIRED;
+                            else if (is_too_large)
+                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_FAILED;
                             // Check if the visa data valid.
                             else if (memcmp(((unsigned char *)&visa_msg_buf + 5), &visa_data, sizeof(visa_data)) != 0)
                                 *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_FAILED;
                             else
                             {
-                                const unsigned char challenge[CHALLENGE_SIZE] = {1};
+                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_ACCEPTED;
+                                
+                                // Seed the random number generator with the current time
+                                srand(time(NULL));
+                                uint32_t random_number = rand();
+                                const unsigned char challenge[CHALLENGE_SIZE];
+                                generate_hashed_random_number(random_number, challenge);
 
-                                *(uint8_t *)&visa_msg_buf = UDP_MSG_CHALLENGE;
-                                memcpy(((unsigned char *)&visa_msg_buf + 1), &challenge, CHALLENGE_SIZE);
+                                //////////////////////////////////////
+                                // Print the generated challenge
+                                printf("Random Number: %u\n", random_number);
+                                printf("Generated Challenge: ");
+                                for (int i = 0; i < CHALLENGE_SIZE; i++)
+                                {
+                                    printf("%02x", challenge[i]);
+                                }
+                                printf("\n");
+                                //////////////////////////////////
+
+                                // *(uint8_t *)&visa_msg_buf = UDP_MSG_CHALLENGE;
+                                
+                                memcpy(((unsigned char *)&visa_msg_buf + 2), &challenge, CHALLENGE_SIZE);
                                 visapass_add(addr, ttl_sec, ipv4, (unsigned char *)&challenge);
-                                msg_size = CHALLENGE_SIZE + 1;
+                                msg_size = CHALLENGE_SIZE + 2;
                             }
-                            
+
                             sendto(visa_sock, &visa_msg_buf, msg_size, MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
 
                             continue;
@@ -799,6 +828,13 @@ int main(int argc, char **argv)
                 close(client_fd);
                 ABEND(94, "could not receive the challenge");
             }
+            printf("visa_msg_buf: %s\n", visa_msg_buf);
+            printf("visa_msg_buf (hex): ");
+            for (int i = 0; i < sizeof(visa_msg_buf); i++)
+            {
+                printf("%02X", (unsigned char)visa_msg_buf[i]);
+            }
+            printf("\n");
 
             // Skip visa connection if challenge isn't received.
             if (*(uint8_t *)&visa_msg_buf != UDP_MSG_CHALLENGE)
@@ -820,7 +856,7 @@ int main(int argc, char **argv)
             *(uint8_t *)&visa_msg_buf = UDP_MSG_VISA_REQ;
             int nonce = 0;
             unsigned char hash[SHA256_DIGEST_LENGTH];
-            calculate_pow(((unsigned char *)&visa_msg_buf + 1), CHALLENGE_SIZE, &hash, (int *)&nonce);
+            calculate_pow(((unsigned char *)&visa_msg_buf + 2), CHALLENGE_SIZE, &hash, (int *)&nonce);
             
             *(int *)((unsigned char *)&visa_msg_buf + 1) = time(NULL);
             memcpy(((unsigned char *)&visa_msg_buf + 5), &hash, sizeof(hash));
@@ -2295,4 +2331,16 @@ bool verify_pow(const unsigned char *hash, const unsigned char *data, const size
         return true;
 
     return false;
+}
+
+void generate_hashed_random_number(uint32_t random_number, unsigned char output[CHALLENGE_SIZE]) {
+    time_t current_time = time(NULL);
+
+    // Combine random number and timestamp into a buffer
+    char buffer[sizeof(random_number) + sizeof(current_time)];
+    memcpy(buffer, &random_number, sizeof(random_number));
+    memcpy(buffer + sizeof(random_number), &current_time, sizeof(current_time));
+
+    // Hash the buffer using SHA-256
+    SHA256((unsigned char *)buffer, sizeof(buffer), output);
 }
