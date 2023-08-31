@@ -559,14 +559,8 @@ int main(int argc, char **argv)
                             {
                                 *(uint8_t *)&visa_msg_buf = UDP_MSG_VISA_RES;
 
-                                if (err_no>0){
-                                    if (err_no == 1)
-                                        *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_EXPIRED;
-                                    else if (err_no == 2)
-                                        *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_TOO_LARGE;
-                                    else if (err_no == 3)
-                                        *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_VERSION_MISMATCHED;
-                                }
+                                if (err_no>0)
+                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = err_no;
                                 // Check for the proof of work in the received data and send approval or rejection accordingly.
                                 else if (verify_pow(((unsigned char *)&visa_msg_buf + 5), challenge_sent, CHALLENGE_SIZE, *(int *)((unsigned char *)&visa_msg_buf + 37)))
                                 {
@@ -2333,8 +2327,8 @@ void generate_challenge(unsigned char *challenge) {
 
     // Combine random number and timestamp into a buffer
     char buffer[sizeof(random_number) + sizeof(current_time)];
-    memcpy(buffer, &random_number, sizeof(random_number));
-    memcpy(buffer + sizeof(random_number), &current_time, sizeof(current_time));
+    *(uint32_t *)((unsigned char *)&buffer) = random_number;
+    *(uint32_t *)((unsigned char *)&buffer + sizeof(random_number)) = current_time;
 
     // Hash the buffer using SHA-256
     SHA256((unsigned char *)buffer, sizeof(buffer), challenge);
