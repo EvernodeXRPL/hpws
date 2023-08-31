@@ -39,6 +39,7 @@
 #define CLIENT_SHUTDOWN_CYCLES 3
 #define CLIENT_SHUTDOWN_FINAL_TIMEOUT 5000 /* microseconds */
 #define HPWS_VERSION "0.9.0"
+#define HPWS_MESSAGE_VERSION 1
 #define POW_DIFFICULTY 5
 #define UDP_MSG_INIT 1
 #define UDP_MSG_VISA_REQ 2
@@ -48,6 +49,8 @@
 #define VISA_MSG_REJECTED 2
 #define VISA_MSG_FAILED 3
 #define VISA_MSG_EXPIRED 4
+#define VISA_MSG_TOO_LARGE 5
+#define VISA_MSG_VERSION_MISMATCHED 6
 #define VISA_EXPIRY_TIME_SECONDS 60
 #define _GNU_SOURCE
 
@@ -484,6 +487,8 @@ int main(int argc, char **argv)
                     {
                         const int visa_poll = poll(fdset, 1, 1);
                         bool is_too_large=false;
+                        // 0 if no error
+                        int err_no = 0;
 
                         if (visa_poll == -1)
                         {
@@ -499,8 +504,10 @@ int main(int argc, char **argv)
                             fprintf(stderr, "Received invalid visa request %d\n", errno);
                             continue;
                         }
-                        if (bytes_read > 261){
+                        if (bytes_read > sizeof(visa_msg_buf)){
                             is_too_large = true;
+                            // if message is too large
+                            err_no = 2;
                             printf("Value of bytes_read: %d\n", bytes_read);
                             fprintf(stderr, "Visa request is too large %d\n", errno);
                             continue;
@@ -510,12 +517,11 @@ int main(int argc, char **argv)
                         const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
                         const uint32_t ttl_sec = 60; // TTL seconds.
                         const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
-
-                        // Check the message oldness.
-                        bool is_too_old = false;
+                        
+                        
                         if (*(int *)((unsigned char *)&visa_msg_buf + 1) <= time(NULL) - VISA_EXPIRY_TIME_SECONDS)
                         {
-                            is_too_old = true;
+                            err_no = 1; // is message is too old
                             fprintf(stderr, "Received too old visa message\n");
                         }
 
@@ -524,10 +530,14 @@ int main(int argc, char **argv)
                             int msg_size = 2;
                             *(uint8_t *)&visa_msg_buf = UDP_MSG_CHALLENGE;
 
-                            if (is_too_old)
-                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_EXPIRED;
-                            else if (is_too_large)
-                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_FAILED;
+                            if (err_no>0){
+                                if (err_no==1)
+                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_EXPIRED;
+                                else if (err_no==2)
+                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_TOO_LARGE;
+                                else if (err_no==3)
+                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_VERSION_MISMATCHED;
+                            }
                             // Check if the visa data valid.
                             else if (memcmp(((unsigned char *)&visa_msg_buf + 5), &visa_data, sizeof(visa_data)) != 0)
                                 *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_FAILED;
@@ -572,8 +582,14 @@ int main(int argc, char **argv)
                             {
                                 *(uint8_t *)&visa_msg_buf = UDP_MSG_VISA_RES;
 
-                                if (is_too_old)
-                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_EXPIRED;
+                                if (err_no>0){
+                                    if (err_no == 1)
+                                        *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_EXPIRED;
+                                    else if (err_no == 2)
+                                        *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_TOO_LARGE;
+                                    else if (err_no == 3)
+                                        *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_VERSION_MISMATCHED;
+                                }
                                 // Check for the proof of work in the received data and send approval or rejection accordingly.
                                 else if (verify_pow(((unsigned char *)&visa_msg_buf + 5), challenge_sent, CHALLENGE_SIZE, *(int *)((unsigned char *)&visa_msg_buf + 37)))
                                 {
