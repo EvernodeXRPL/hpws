@@ -530,7 +530,7 @@ int main(int argc, char **argv)
                             int msg_size = 3;
                             *(uint8_t *)&visa_msg_buf = UDP_MSG_CHALLENGE;
 
-                            if (err_no>0)
+                            if (err_no > 0)
                                 *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = err_no;
                             // Check if the visa data valid.
                             else if (memcmp(((unsigned char *)&visa_msg_buf + 5), &visa_token, sizeof(visa_token)) != 0)
@@ -538,9 +538,6 @@ int main(int argc, char **argv)
                             else
                             {
                                 *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_ACCEPTED;
-                                
-                                
-                                const unsigned char challenge[CHALLENGE_SIZE];
                                 generate_challenge((unsigned char *)&visa_msg_buf + 2);
                                 visapass_add(addr, ttl_sec, ipv4, (unsigned char *)&visa_msg_buf + 2);
                                 msg_size = CHALLENGE_SIZE + 3;
@@ -559,7 +556,7 @@ int main(int argc, char **argv)
                             {
                                 *(uint8_t *)&visa_msg_buf = UDP_MSG_VISA_RES;
 
-                                if (err_no>0)
+                                if (err_no > 0)
                                     *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = err_no;
                                 // Check for the proof of work in the received data and send approval or rejection accordingly.
                                 else if (verify_pow(((unsigned char *)&visa_msg_buf + 5), challenge_sent, CHALLENGE_SIZE, *(int *)((unsigned char *)&visa_msg_buf + 37)))
@@ -2321,9 +2318,9 @@ bool verify_pow(const unsigned char *hash, const unsigned char *data, const size
 
 void generate_challenge(unsigned char *challenge) {
     // Seed the random number generator with the current time
-    srand(time(NULL));
-    uint32_t random_number = rand();
     time_t current_time = time(NULL);
+    srand(current_time);
+    uint32_t random_number = rand();
 
     // Combine random number and timestamp into a buffer
     char buffer[sizeof(random_number) + sizeof(current_time)];
