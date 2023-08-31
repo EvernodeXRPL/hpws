@@ -48,7 +48,7 @@ int example_client() {
         //client.write("a message from the client\n");
         
         for(;;) {
-
+            int counter = 0;
             auto read_result = client.read();
             if ( std::holds_alternative<hpws::error>(read_result) ) {
                 PRINT_HPWS_ERROR(read_result);
@@ -66,6 +66,10 @@ int example_client() {
             client.ack(s);    
             char out[1024];
             sprintf(out, "message from client: %d\n", ++msgcounter);
+            if(msgcounter>10){
+
+                break;
+            }
             client.write(out);
         }
     }
