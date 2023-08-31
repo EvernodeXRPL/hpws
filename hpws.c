@@ -525,7 +525,7 @@ int main(int argc, char **argv)
                         
                         if (*(int *)((unsigned char *)&visa_msg_buf + 1) <= time(NULL) - VISA_EXPIRY_TIME_SECONDS)
                         {
-                            err_no = 1; // is message is too old
+                            err_no = VISA_MSG_EXPIRED; // is message is too old
                             fprintf(stderr, "Received too old visa message\n");
                         }
 
@@ -535,12 +535,7 @@ int main(int argc, char **argv)
                             *(uint8_t *)&visa_msg_buf = UDP_MSG_CHALLENGE;
 
                             if (err_no>0){
-                                if (err_no==1)
-                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_EXPIRED;
-                                else if (err_no==2)
-                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_TOO_LARGE;
-                                else if (err_no==3)
-                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_VERSION_MISMATCHED;
+                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = err_no;
                             }
                             // Check if the visa data valid.
                             else if (memcmp(((unsigned char *)&visa_msg_buf + 5), &visa_token, sizeof(visa_token)) != 0)
