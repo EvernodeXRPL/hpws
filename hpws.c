@@ -39,18 +39,18 @@
 #define CLIENT_SHUTDOWN_CYCLES 3
 #define CLIENT_SHUTDOWN_FINAL_TIMEOUT 5000 /* microseconds */
 #define HPWS_VERSION "0.9.0"
-#define HPWS_MESSAGE_VERSION 1
 #define POW_DIFFICULTY 5
 #define UDP_MSG_INIT 1
 #define UDP_MSG_VISA_REQ 2
 #define UDP_MSG_CHALLENGE 3
 #define UDP_MSG_VISA_RES 4
+#define VISA_MSG_VERSION 1
 #define VISA_MSG_ACCEPTED 1
 #define VISA_MSG_REJECTED 120
 #define VISA_MSG_FAILED 121
 #define VISA_MSG_EXPIRED 122
 #define VISA_MSG_TOO_LARGE 123
-#define VISA_MSG_VERSION_MISMATCHED 124
+#define VISA_MSG_VERSION_MISMATCH 124
 #define VISA_EXPIRY_TIME_SECONDS 60
 #define _GNU_SOURCE
 
@@ -487,8 +487,7 @@ int main(int argc, char **argv)
                     fdset[0].fd = visa_sock;
                     fdset[0].events = POLLIN;
 
-                    
-                    while(true)
+                    while (true)
                     {
                         const int visa_poll = poll(fdset, 1, 1);
                         // 0 if no error
@@ -508,72 +507,78 @@ int main(int argc, char **argv)
                             fprintf(stderr, "Received invalid visa message %d\n", errno);
                             continue;
                         }
-                        else if (bytes_read > sizeof(visa_msg_buf)){
+                        else if (bytes_read > sizeof(visa_msg_buf))
+                        {
                             // if message is too large
                             err_no = VISA_MSG_TOO_LARGE;
                             fprintf(stderr, "Visa message is too large %d\n", errno);
                         }
-
-                        const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
-                        const uint32_t ttl_sec = 60; // TTL seconds.
-                        const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
-                        
-                        
-                        if (*(int *)((unsigned char *)&visa_msg_buf + 1) <= time(NULL) - VISA_EXPIRY_TIME_SECONDS)
+                        else if (*(uint8_t *)&visa_msg_buf != VISA_MSG_VERSION)
+                        {
+                            err_no = VISA_MSG_VERSION_MISMATCH; // invalid message version
+                            fprintf(stderr, "Received invalid visa message version\n");
+                        }
+                        else if (*(int *)((unsigned char *)&visa_msg_buf + 2) <= time(NULL) - VISA_EXPIRY_TIME_SECONDS)
                         {
                             err_no = VISA_MSG_EXPIRED; // is message is too old
                             fprintf(stderr, "Received too old visa message\n");
                         }
 
-                        if (*(uint8_t *)&visa_msg_buf == UDP_MSG_INIT)
+                        const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
+                        const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
+
+                        // Populate the message version.
+                        *(uint8_t *)&visa_msg_buf = VISA_MSG_VERSION;
+
+                        if (*(uint8_t *)((uint8_t *)&visa_msg_buf + 1) == UDP_MSG_INIT)
                         {
                             int msg_size = 3;
-                            *(uint8_t *)&visa_msg_buf = UDP_MSG_CHALLENGE;
+                            *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = UDP_MSG_CHALLENGE;
 
                             if (err_no > 0)
                                 *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = err_no;
                             // Check if the visa data valid.
-                            else if (memcmp(((unsigned char *)&visa_msg_buf + 5), &visa_token, sizeof(visa_token)) != 0)
-                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_FAILED;
+                            else if (memcmp(((unsigned char *)&visa_msg_buf + 6), &visa_token, sizeof(visa_token)) != 0)
+                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = VISA_MSG_FAILED;
                             else
                             {
-                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_ACCEPTED;
-                                generate_challenge((unsigned char *)&visa_msg_buf + 2);
-                                visapass_add(addr, ttl_sec, ipv4, (unsigned char *)&visa_msg_buf + 2);
-                                msg_size = CHALLENGE_SIZE + 3;
+                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = VISA_MSG_ACCEPTED;
+                                generate_challenge((unsigned char *)&visa_msg_buf + 3);
+                                visapass_add(addr, VISA_EXPIRY_TIME_SECONDS, ipv4, (unsigned char *)&visa_msg_buf + 3);
+                                msg_size += CHALLENGE_SIZE;
                             }
 
-                            sendto(visa_sock, &visa_msg_buf, msg_size, MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
+                            sendto(visa_sock, &visa_msg_buf, msg_size, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len);
 
                             continue;
                         }
-                        else if (*(uint8_t *)&visa_msg_buf == UDP_MSG_VISA_REQ)
+                        else if (*(uint8_t *)((uint8_t *)&visa_msg_buf + 1) == UDP_MSG_VISA_REQ)
                         {
                             const unsigned char *challenge_sent = visapass_get_challenge(addr, ipv4);
 
                             // Check for the challenge sent for this client.
                             if (challenge_sent != NULL)
                             {
-                                *(uint8_t *)&visa_msg_buf = UDP_MSG_VISA_RES;
+                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = UDP_MSG_VISA_RES;
 
                                 if (err_no > 0)
                                     *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = err_no;
                                 // Check for the proof of work in the received data and send approval or rejection accordingly.
-                                else if (verify_pow(((unsigned char *)&visa_msg_buf + 5), challenge_sent, CHALLENGE_SIZE, *(int *)((unsigned char *)&visa_msg_buf + 37)))
+                                else if (verify_pow(((unsigned char *)&visa_msg_buf + 6), challenge_sent, CHALLENGE_SIZE, *(int *)((unsigned char *)&visa_msg_buf + 38)))
                                 {
                                     // Send approval and mark visa as passed if pow is valid.
-                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_ACCEPTED;
+                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = VISA_MSG_ACCEPTED;
                                     visapass_pass(addr, ipv4);
                                 }
                                 else
                                 {
                                     // Send rejection and remove visa pass if pow is invalid.
-                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_REJECTED;
+                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = VISA_MSG_REJECTED;
                                     visapass_remove(addr, ipv4);
                                     fprintf(stderr, "Received invalid visa challenge\n");
                                 }
 
-                                sendto(visa_sock, &visa_msg_buf, 2, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len);
+                                sendto(visa_sock, &visa_msg_buf, 3, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len);
 
                                 continue;
                             }
@@ -800,10 +805,11 @@ int main(int argc, char **argv)
             client_fd = socket(res->ai_family, SOCK_DGRAM, 0);
 
             // Send the intension to connect.
-            *(uint8_t *)&visa_msg_buf = UDP_MSG_INIT;
-            *(int *)((unsigned char *)&visa_msg_buf + 1) = time(NULL);
-            memcpy(((unsigned char *)&visa_msg_buf + 5), &visa_token, sizeof(visa_token));
-            if (sendto(client_fd, &visa_msg_buf, sizeof(visa_token) + 5, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
+            *(uint8_t *)&visa_msg_buf = VISA_MSG_VERSION;
+            *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = UDP_MSG_INIT;
+            *(int *)((unsigned char *)&visa_msg_buf + 2) = time(NULL);
+            memcpy(((unsigned char *)&visa_msg_buf + 6), &visa_token, sizeof(visa_token));
+            if (sendto(client_fd, &visa_msg_buf, sizeof(visa_token) + 6, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Unable to send connection init, errno: %d\n", my_pid, errno);
                 close(client_fd);
@@ -819,7 +825,7 @@ int main(int argc, char **argv)
             }
 
             // Skip visa connection if challenge isn't received.
-            if (*(uint8_t *)&visa_msg_buf != UDP_MSG_CHALLENGE)
+            if (*(uint8_t *)((uint8_t *)&visa_msg_buf + 1) != UDP_MSG_CHALLENGE)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Didn't receive the challenge, errno: %d\n", my_pid, errno);
                 close(client_fd);
@@ -827,23 +833,24 @@ int main(int argc, char **argv)
             }
 
             // Skip visa connection if init request isn't accepted.
-            if (*(uint8_t *)((uint8_t *)&visa_msg_buf + 1) != VISA_MSG_ACCEPTED)
+            if (*(uint8_t *)((uint8_t *)&visa_msg_buf + 2) != VISA_MSG_ACCEPTED)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Init request rejected, errno: %d\n", my_pid, errno);
                 close(client_fd);
-                ABEND(*(uint8_t *)((uint8_t *)&visa_msg_buf + 1), "init request rejected from the server");
+                ABEND(*(uint8_t *)((uint8_t *)&visa_msg_buf + 2), "init request rejected from the server");
             }
 
             // Create visa request with the pow and send to the server.
-            *(uint8_t *)&visa_msg_buf = UDP_MSG_VISA_REQ;
+            *(uint8_t *)&visa_msg_buf = VISA_MSG_VERSION;
+            *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = UDP_MSG_VISA_REQ;
             int nonce = 0;
             unsigned char hash[SHA256_DIGEST_LENGTH];
-            calculate_pow(((unsigned char *)&visa_msg_buf + 2), CHALLENGE_SIZE, &hash, (int *)&nonce);
-            
-            *(int *)((unsigned char *)&visa_msg_buf + 1) = time(NULL);
-            memcpy(((unsigned char *)&visa_msg_buf + 5), &hash, sizeof(hash));
-            *(int *)((unsigned char *)&visa_msg_buf + 37) = nonce;
-            if (sendto(client_fd, &visa_msg_buf, 41, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
+            calculate_pow(((unsigned char *)&visa_msg_buf + 3), CHALLENGE_SIZE, &hash, (int *)&nonce);
+
+            *(int *)((unsigned char *)&visa_msg_buf + 2) = time(NULL);
+            memcpy(((unsigned char *)&visa_msg_buf + 6), &hash, sizeof(hash));
+            *(int *)((unsigned char *)&visa_msg_buf + 38) = nonce;
+            if (sendto(client_fd, &visa_msg_buf, 42, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Unable to request visa, errno: %d\n", my_pid, errno);
                 close(client_fd);
@@ -859,7 +866,7 @@ int main(int argc, char **argv)
             }
 
             // Skip tcp connection if visa response is not received.
-            if (*(uint8_t *)&visa_msg_buf != UDP_MSG_VISA_RES)
+            if (*(uint8_t *)((uint8_t *)&visa_msg_buf + 1) != UDP_MSG_VISA_RES)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Visa response not received, errno: %d\n", my_pid, errno);
                 close(client_fd);
@@ -867,11 +874,11 @@ int main(int argc, char **argv)
             }
 
             // Skip tcp connection if visa is rejected.
-            if (*(uint8_t *)((uint8_t *)&visa_msg_buf + 1) != VISA_MSG_ACCEPTED)
+            if (*(uint8_t *)((uint8_t *)&visa_msg_buf + 2) != VISA_MSG_ACCEPTED)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Visa rejected, errno: %d\n", my_pid, errno);
                 close(client_fd);
-                ABEND(*(uint8_t *)((uint8_t *)&visa_msg_buf + 1), "visa rejected from the server");
+                ABEND(*(uint8_t *)((uint8_t *)&visa_msg_buf + 2), "visa rejected from the server");
             }
 
             close(client_fd);
