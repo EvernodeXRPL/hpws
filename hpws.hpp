@@ -426,7 +426,7 @@ namespace hpws
 
                 // we will set a timeout and wait for the initial startup message from hpws client mode
                 struct pollfd pfd;
-                int ret;
+                int ret = 0;
 
                 pfd.fd = child_fd[0]; // we receive setup events on control line 0 (hpws->hpcore)
                 pfd.events = POLLIN;
