@@ -525,7 +525,6 @@ int main(int argc, char **argv)
                         }
 
                         const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
-                        const uint32_t ttl_sec = 60; // TTL seconds.
                         const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
 
                         // Populate the message version.
@@ -545,7 +544,7 @@ int main(int argc, char **argv)
                             {
                                 *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = VISA_MSG_ACCEPTED;
                                 generate_challenge((unsigned char *)&visa_msg_buf + 3);
-                                visapass_add(addr, ttl_sec, ipv4, (unsigned char *)&visa_msg_buf + 3);
+                                visapass_add(addr, VISA_EXPIRY_TIME_SECONDS, ipv4, (unsigned char *)&visa_msg_buf + 3);
                                 msg_size += CHALLENGE_SIZE;
                             }
 
