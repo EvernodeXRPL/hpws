@@ -48,7 +48,6 @@ int example_client() {
         //client.write("a message from the client\n");
         
         for(;;) {
-
             auto read_result = client.read();
             if ( std::holds_alternative<hpws::error>(read_result) ) {
                 PRINT_HPWS_ERROR(read_result);

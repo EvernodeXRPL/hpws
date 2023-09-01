@@ -39,15 +39,18 @@
 #define CLIENT_SHUTDOWN_CYCLES 3
 #define CLIENT_SHUTDOWN_FINAL_TIMEOUT 5000 /* microseconds */
 #define HPWS_VERSION "0.9.0"
+#define HPWS_MESSAGE_VERSION 1
 #define POW_DIFFICULTY 5
 #define UDP_MSG_INIT 1
 #define UDP_MSG_VISA_REQ 2
 #define UDP_MSG_CHALLENGE 3
 #define UDP_MSG_VISA_RES 4
 #define VISA_MSG_ACCEPTED 1
-#define VISA_MSG_REJECTED 2
-#define VISA_MSG_FAILED 3
-#define VISA_MSG_EXPIRED 4
+#define VISA_MSG_REJECTED 120
+#define VISA_MSG_FAILED 121
+#define VISA_MSG_EXPIRED 122
+#define VISA_MSG_TOO_LARGE 123
+#define VISA_MSG_VERSION_MISMATCHED 124
 #define VISA_EXPIRY_TIME_SECONDS 60
 #define _GNU_SOURCE
 
@@ -113,7 +116,7 @@ unsigned char * base64_encode( unsigned char* src, size_t len, unsigned char* ou
 void block_xor(unsigned char* buf, uint64_t start, uint64_t end, unsigned char* masking_key_x3, uint8_t key_offset_);
 void calculate_pow(const unsigned char *data, const size_t data_len, unsigned char *hash, int *nonce);
 bool verify_pow(const unsigned char *hash, const unsigned char *data, const size_t data_len, const int nonce);
-
+void generate_challenge(unsigned char *challenge);
 
 #define UTF8_ACCEPT 0
 #define UTF8_REJECT 1
@@ -484,59 +487,63 @@ int main(int argc, char **argv)
                     fdset[0].fd = visa_sock;
                     fdset[0].events = POLLIN;
 
-                    while (true)
+                    
+                    while(true)
                     {
                         const int visa_poll = poll(fdset, 1, 1);
+                        // 0 if no error
+                        int err_no = 0;
 
                         if (visa_poll == -1)
                         {
                             perror("visa request poll");
                             exit(1);
                         }
-
-                        if (visa_poll == 0) // No incoming visa request.
+                        else if (visa_poll == 0) // No incoming visa request.
                             break;
 
                         int bytes_read = recvfrom(visa_sock, &visa_msg_buf, sizeof(visa_msg_buf), MSG_WAITALL, (struct sockaddr *)&client_addr, &client_addr_len);
                         if (bytes_read < 1)
                         {
-                            fprintf(stderr, "Received invalid visa request %d\n", errno);
+                            fprintf(stderr, "Received invalid visa message %d\n", errno);
                             continue;
+                        }
+                        else if (bytes_read > sizeof(visa_msg_buf)){
+                            // if message is too large
+                            err_no = VISA_MSG_TOO_LARGE;
+                            fprintf(stderr, "Visa message is too large %d\n", errno);
                         }
 
                         const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
                         const uint32_t ttl_sec = 60; // TTL seconds.
                         const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
-
-                        // Check the message oldness.
-                        bool is_too_old = false;
+                        
+                        
                         if (*(int *)((unsigned char *)&visa_msg_buf + 1) <= time(NULL) - VISA_EXPIRY_TIME_SECONDS)
                         {
-                            is_too_old = true;
+                            err_no = VISA_MSG_EXPIRED; // is message is too old
                             fprintf(stderr, "Received too old visa message\n");
                         }
 
                         if (*(uint8_t *)&visa_msg_buf == UDP_MSG_INIT)
                         {
-                            int msg_size = 2;
+                            int msg_size = 3;
                             *(uint8_t *)&visa_msg_buf = UDP_MSG_CHALLENGE;
 
-                            if (is_too_old)
-                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_EXPIRED;
+                            if (err_no > 0)
+                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = err_no;
                             // Check if the visa data valid.
                             else if (memcmp(((unsigned char *)&visa_msg_buf + 5), &visa_token, sizeof(visa_token)) != 0)
                                 *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_FAILED;
                             else
                             {
-                                const unsigned char challenge[CHALLENGE_SIZE] = {1};
-
-                                *(uint8_t *)&visa_msg_buf = UDP_MSG_CHALLENGE;
-                                memcpy(((unsigned char *)&visa_msg_buf + 1), &challenge, CHALLENGE_SIZE);
-                                visapass_add(addr, ttl_sec, ipv4, (unsigned char *)&challenge);
-                                msg_size = CHALLENGE_SIZE + 1;
+                                *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_ACCEPTED;
+                                generate_challenge((unsigned char *)&visa_msg_buf + 2);
+                                visapass_add(addr, ttl_sec, ipv4, (unsigned char *)&visa_msg_buf + 2);
+                                msg_size = CHALLENGE_SIZE + 3;
                             }
 
-                            sendto(visa_sock, &visa_msg_buf, msg_size, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len);
+                            sendto(visa_sock, &visa_msg_buf, msg_size, MSG_CONFIRM, (struct sockaddr*)&client_addr, client_addr_len);
 
                             continue;
                         }
@@ -549,8 +556,8 @@ int main(int argc, char **argv)
                             {
                                 *(uint8_t *)&visa_msg_buf = UDP_MSG_VISA_RES;
 
-                                if (is_too_old)
-                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 1) = VISA_MSG_EXPIRED;
+                                if (err_no > 0)
+                                    *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = err_no;
                                 // Check for the proof of work in the received data and send approval or rejection accordingly.
                                 else if (verify_pow(((unsigned char *)&visa_msg_buf + 5), challenge_sent, CHALLENGE_SIZE, *(int *)((unsigned char *)&visa_msg_buf + 37)))
                                 {
@@ -831,8 +838,8 @@ int main(int argc, char **argv)
             *(uint8_t *)&visa_msg_buf = UDP_MSG_VISA_REQ;
             int nonce = 0;
             unsigned char hash[SHA256_DIGEST_LENGTH];
-            calculate_pow(((unsigned char *)&visa_msg_buf + 1), CHALLENGE_SIZE, &hash, (int *)&nonce);
-
+            calculate_pow(((unsigned char *)&visa_msg_buf + 2), CHALLENGE_SIZE, &hash, (int *)&nonce);
+            
             *(int *)((unsigned char *)&visa_msg_buf + 1) = time(NULL);
             memcpy(((unsigned char *)&visa_msg_buf + 5), &hash, sizeof(hash));
             *(int *)((unsigned char *)&visa_msg_buf + 37) = nonce;
@@ -2307,4 +2314,19 @@ bool verify_pow(const unsigned char *hash, const unsigned char *data, const size
         return true;
 
     return false;
+}
+
+void generate_challenge(unsigned char *challenge) {
+    // Seed the random number generator with the current time
+    time_t current_time = time(NULL);
+    srand(current_time);
+    uint32_t random_number = rand();
+
+    // Combine random number and timestamp into a buffer
+    char buffer[sizeof(random_number) + sizeof(current_time)];
+    *(uint32_t *)((unsigned char *)&buffer) = random_number;
+    *(uint32_t *)((unsigned char *)&buffer + sizeof(random_number)) = current_time;
+
+    // Hash the buffer using SHA-256
+    SHA256((unsigned char *)buffer, sizeof(buffer), challenge);
 }
