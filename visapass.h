@@ -136,7 +136,7 @@ void visapass_remove(const uint32_t *addr, const bool ipv4)
 bool visapass_is_passed(const uint32_t *addr, const bool ipv4)
 {
     struct __visapass_slot *slot = __visapass_find(addr, (ipv4 ? __IP_V4 : __IP_V6));
-    return slot->passed;
+    return slot != NULL && slot->passed;
 }
 
 const unsigned char *visapass_get_challenge(const uint32_t *addr, const bool ipv4)
