@@ -814,7 +814,7 @@ int main(int argc, char **argv)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Unable to send connection init, errno: %d\n", my_pid, errno);
                 close(client_fd);
-                ABEND(93, "could not send the connection init");
+                ABEND(94, "could not send the connection init");
             }
 
             int bytes_read = recvfrom(client_fd, &visa_msg_buf, sizeof(visa_msg_buf), MSG_WAITALL, (struct sockaddr *)&client_addr, &client_addr_len);
@@ -822,7 +822,7 @@ int main(int argc, char **argv)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Invalid challenge, errno: %d\n", my_pid, errno);
                 close(client_fd);
-                ABEND(94, "could not receive the challenge");
+                ABEND(95, "could not receive the challenge");
             }
 
             // Skip visa connection if challenge isn't received.
@@ -830,7 +830,7 @@ int main(int argc, char **argv)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Didn't receive the challenge, errno: %d\n", my_pid, errno);
                 close(client_fd);
-                ABEND(95, "challenge didn't receive from the server");
+                ABEND(96, "challenge didn't receive from the server");
             }
 
             // Skip visa connection if init request isn't accepted.
@@ -855,7 +855,7 @@ int main(int argc, char **argv)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Unable to request visa, errno: %d\n", my_pid, errno);
                 close(client_fd);
-                ABEND(96, "could not send the visa request");
+                ABEND(97, "could not send the visa request");
             }
 
             bytes_read = recvfrom(client_fd, &visa_msg_buf, sizeof(visa_msg_buf), MSG_WAITALL, (struct sockaddr *)&client_addr, &client_addr_len);
@@ -863,7 +863,7 @@ int main(int argc, char **argv)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Invalid visa response, errno: %d\n", my_pid, errno);
                 close(client_fd);
-                ABEND(97, "could not receive the visa response");
+                ABEND(98, "could not receive the visa response");
             }
 
             // Skip tcp connection if visa response is not received.
@@ -871,7 +871,7 @@ int main(int argc, char **argv)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Visa response not received, errno: %d\n", my_pid, errno);
                 close(client_fd);
-                ABEND(98, "visa response not received from the server");
+                ABEND(99, "visa response not received from the server");
             }
 
             // Skip tcp connection if visa is rejected.
@@ -889,7 +889,7 @@ int main(int argc, char **argv)
         if (connect(client_fd, (struct sockaddr *)&client_addr, client_addr_len))
         {
             fprintf(stderr, "[HPWS.C PID+%08X] Unable to connect, errno: %d\n", my_pid, errno);
-            ABEND(99, "can't connect");
+            ABEND(93, "can't connect");
         }
 
         // Set TCP no delay so OS packet buffering doesn't happen.
