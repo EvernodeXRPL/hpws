@@ -46,7 +46,7 @@
 #define UDP_MSG_VISA_RES 4
 #define VISA_MSG_VERSION 1
 #define VISA_MSG_ACCEPTED 1
-#define VISA_MSG_REJECTED 120
+#define VISA_MSG_REJECTED 120 /* Error code are starting from 120 because it'll be passed as ABEND exit code */
 #define VISA_MSG_FAILED 121
 #define VISA_MSG_EXPIRED 122
 #define VISA_MSG_TOO_LARGE 123
