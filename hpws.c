@@ -550,7 +550,7 @@ int main(int argc, char **argv)
                                 generate_challenge(&visa_msg_buf[4]);
 
                                 generate_visa_id(addr, &visa_msg_buf[4], &visa_id);
-                                visapass_add(visa_id, VISA_EXPIRY_TIME_SECONDS, &visa_msg_buf[4]);
+                                visapass_add(&visa_id, VISA_EXPIRY_TIME_SECONDS, &visa_msg_buf[4]);
                                 msg_size += CHALLENGE_SIZE;
                             }
 
@@ -560,8 +560,8 @@ int main(int argc, char **argv)
                         }
                         else if (visa_msg_buf[2] == UDP_MSG_VISA_REQ)
                         {
-                            generate_visa_id(addr, (unsigned char *)&visa_msg_buf + 7, visa_id);
-                            const unsigned char *challenge_sent = visapass_get_challenge(visa_id);
+                            generate_visa_id(addr, &visa_msg_buf[7], visa_id);
+                            const unsigned char *challenge_sent = visapass_get_challenge(&visa_id);
 
                             // Check for the challenge sent for this client.
                             if (challenge_sent != NULL)
@@ -575,13 +575,13 @@ int main(int argc, char **argv)
                                 {
                                     // Send approval and mark visa as passed if pow is valid.
                                     visa_msg_buf[3] = VISA_MSG_ACCEPTED;
-                                    visapass_pass(visa_id);
+                                    visapass_pass(&visa_id);
                                 }
                                 else
                                 {
                                     // Send rejection and remove visa pass if pow is invalid.
                                     visa_msg_buf[3] = VISA_MSG_REJECTED;
-                                    visapass_remove(visa_id);
+                                    visapass_remove(&visa_id);
                                     fprintf(stderr, "Received invalid visa challenge\n");
                                 }
 
@@ -592,7 +592,7 @@ int main(int argc, char **argv)
                         }
 
                         // Remove visa pass if unhandled message is sent.
-                        visapass_remove(visa_id);
+                        visapass_remove(&visa_id);
                     }
                 }
             }
@@ -738,29 +738,29 @@ int main(int argc, char **argv)
                 {
                     GOTO_ERROR("too large visa id message", force_closed);
                 }
-                else if (*(uint16_t *)((unsigned char *)&visa_msg_buf) != VISA_MSG_VERSION)
+                else if (*(uint16_t *)&visa_msg_buf != VISA_MSG_VERSION)
                 {
                     GOTO_ERROR("visa id message version mismatch", force_closed);
                 }
-                else if (*(int *)((unsigned char *)&visa_msg_buf + 3) <= time(NULL) - VISA_EXPIRY_TIME_SECONDS)
+                else if (*(int *)&visa_msg_buf[3] <= time(NULL) - VISA_EXPIRY_TIME_SECONDS)
                 {
                     GOTO_ERROR("too old visa id message", force_closed);
                 }
 
-                if (*(uint8_t *)((uint8_t *)&visa_msg_buf + 2) == UDP_MSG_VISA_ID)
+                if (visa_msg_buf[2] == UDP_MSG_VISA_ID)
                 {
                     // Check whether visa is approved for this visa id.
                     // Ban if this visa id is not whitelisted from visa approval.
-                    generate_visa_id(addr, (unsigned char *)&visa_msg_buf + 7, visa_id);
-                    if (!visapass_is_passed(visa_id))
+                    generate_visa_id(addr, &visa_msg_buf[7], &visa_id);
+                    if (!visapass_is_passed(&visa_id))
                     {
                         // Remove the visa from visa passes.
-                        visapass_remove(visa_id);
+                        visapass_remove(&visa_id);
                         GOTO_ERROR("client connection not approved", force_closed);
                     }
 
                     // Remove the visa from visa passes.
-                    visapass_remove(visa_id);
+                    visapass_remove(&visa_id);
                 }
                 else
                 {
@@ -944,10 +944,10 @@ int main(int argc, char **argv)
 
         if (visa_required)
         {
-            *(uint16_t *)((unsigned char *)&visa_msg_buf) = VISA_MSG_VERSION;
-            *(uint8_t *)((uint8_t *)&visa_msg_buf + 2) = UDP_MSG_VISA_ID;
-            *(int *)((unsigned char *)&visa_msg_buf + 3) = time(NULL);
-            memcpy(((unsigned char *)&visa_msg_buf + 7), &challenge, sizeof(challenge));
+            *(uint16_t *)&visa_msg_buf = VISA_MSG_VERSION;
+            visa_msg_buf[2] = UDP_MSG_VISA_ID;
+            *(int *)&visa_msg_buf[3] = time(NULL);
+            memcpy(&visa_msg_buf[7], &challenge, sizeof(challenge));
             if (write(client_fd, &visa_msg_buf, sizeof(visa_token) + 7) < 0)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Unable to send visa id, errno: %d\n", my_pid, errno);
