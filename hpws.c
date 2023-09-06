@@ -880,7 +880,7 @@ int main(int argc, char **argv)
                 ABEND(visa_msg_buf[3], "init request rejected from the server");
             }
 
-            memcpy(challenge, ((unsigned char *)&visa_msg_buf + 4), CHALLENGE_SIZE);
+            memcpy(challenge, &visa_msg_buf[4], CHALLENGE_SIZE);
 
             // Create visa request with the pow and send to the server.
             *(uint16_t *)&visa_msg_buf = VISA_MSG_VERSION;
