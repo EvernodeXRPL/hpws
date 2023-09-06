@@ -2328,10 +2328,10 @@ void calculate_pow(const unsigned char *data, const size_t data_len, unsigned ch
     {
         unsigned char hash_buf[data_len + sizeof(*nonce)];
         memcpy(&hash_buf, data, data_len);
-        memcpy(((unsigned char *)(&hash_buf) + data_len), nonce, sizeof(*nonce));
+        memcpy(&hash_buf[data_len], nonce, sizeof(*nonce));
 
         // Calculate SHA-256 hash
-        SHA256(hash_buf, sizeof(hash_buf), hash);
+        SHA256((unsigned char *)&hash_buf, sizeof(hash_buf), hash);
 
         int i = 0;
         while (i < POW_DIFFICULTY)
@@ -2366,15 +2366,15 @@ bool verify_pow(const unsigned char *hash, const unsigned char *data, const size
 
     unsigned char hash_buf[data_len + sizeof(nonce)];
     memcpy(&hash_buf, data, data_len);
-    memcpy(((unsigned char *)(&hash_buf) + data_len), &nonce, sizeof(nonce));
+    memcpy(&hash_buf[data_len], &nonce, sizeof(nonce));
 
     unsigned char hash_calc[SHA256_DIGEST_LENGTH];
 
     // Calculate SHA-256 hash.
-    SHA256(hash_buf, sizeof(hash_buf), (unsigned char *)&hash_calc);
+    SHA256((unsigned char *)&hash_buf, sizeof(hash_buf), (unsigned char *)&hash_calc);
 
     // Verify hash.
-    if (memcmp((unsigned char *)hash, &hash_calc, sizeof(hash_calc)) == 0)
+    if (memcmp(hash, &hash_calc, sizeof(hash_calc)) == 0)
         return true;
 
     return false;
@@ -2389,19 +2389,19 @@ void generate_challenge(unsigned char *challenge)
 
     // Combine random number and timestamp into a buffer
     char buffer[sizeof(random_number) + sizeof(current_time)];
-    *(uint32_t *)((unsigned char *)&buffer) = random_number;
-    *(uint32_t *)((unsigned char *)&buffer + sizeof(random_number)) = current_time;
+    *(uint32_t *)&buffer = random_number;
+    *(uint32_t *)&buffer[sizeof(random_number)] = current_time;
 
     // Hash the buffer using SHA-256
-    SHA256((unsigned char *)buffer, sizeof(buffer), challenge);
+    SHA256((unsigned char *)&buffer, sizeof(buffer), challenge);
 }
 
 void generate_visa_id(const uint32_t addr, const unsigned char *challenge, unsigned char *id)
 {
     char buffer[sizeof(addr) + CHALLENGE_SIZE];
-    *(uint32_t *)((unsigned char *)&buffer) = addr;
-    memcpy(((unsigned char *)&buffer + sizeof(addr)), challenge, CHALLENGE_SIZE);
+    *(uint32_t *)&buffer = addr;
+    memcpy(&buffer[sizeof(addr)], challenge, CHALLENGE_SIZE);
 
     // Hash the buffer using SHA-256
-    SHA256((unsigned char *)buffer, sizeof(buffer), id);
+    SHA256((unsigned char *)&buffer, sizeof(buffer), id);
 }
