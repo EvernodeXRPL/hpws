@@ -64,6 +64,7 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -116,7 +117,7 @@ unsigned char * base64_encode( unsigned char* src, size_t len, unsigned char* ou
 void block_xor(unsigned char* buf, uint64_t start, uint64_t end, unsigned char* masking_key_x3, uint8_t key_offset_);
 void calculate_pow(const unsigned char *data, const size_t data_len, unsigned char *hash, int *nonce);
 bool verify_pow(const unsigned char *hash, const unsigned char *data, const size_t data_len, const int nonce);
-void generate_challenge(unsigned char *challenge);
+void generate_challenge(unsigned char *challenge, const size_t challenge_len);
 
 #define UTF8_ACCEPT 0
 #define UTF8_REJECT 1
@@ -544,7 +545,7 @@ int main(int argc, char **argv)
                             else
                             {
                                 visa_msg_buf[3] = VISA_MSG_ACCEPTED;
-                                generate_challenge(&visa_msg_buf[4]);
+                                generate_challenge(&visa_msg_buf[4], CHALLENGE_SIZE);
                                 visapass_add(addr, VISA_EXPIRY_TIME_SECONDS, ipv4, &visa_msg_buf[4]);
                                 msg_size += CHALLENGE_SIZE;
                             }
@@ -2324,17 +2325,6 @@ bool verify_pow(const unsigned char *hash, const unsigned char *data, const size
     return false;
 }
 
-void generate_challenge(unsigned char *challenge) {
-    // Seed the random number generator with the current time
-    time_t current_time = time(NULL);
-    srand(current_time);
-    uint32_t random_number = rand();
-
-    // Combine random number and timestamp into a buffer
-    char buffer[sizeof(random_number) + sizeof(current_time)];
-    *(uint32_t *)&buffer = random_number;
-    *(uint32_t *)&buffer[sizeof(random_number)] = current_time;
-
-    // Hash the buffer using SHA-256
-    SHA256((unsigned char *)&buffer, sizeof(buffer), challenge);
+void generate_challenge(unsigned char *challenge, const size_t challenge_len) {
+    RAND_bytes(challenge, challenge_len);
 }
