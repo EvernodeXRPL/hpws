@@ -6,8 +6,6 @@
 #include <stdbool.h>
 
 #define __VISAPASS_SLOT_COUNT 100
-#define __IP_V4 1
-#define __IP_V6 2
 #define CHALLENGE_SIZE 32
 #define ID_SIZE 32
 
