@@ -53,7 +53,7 @@
 #define VISA_MSG_TOO_LARGE 123
 #define VISA_MSG_VERSION_MISMATCH 124
 #define VISA_EXPIRY_TIME_SECONDS 60
-#define VISA_ID_WAIT_TIMEOUT 5000 /* ms */ // The delay used for visa id message polling.
+#define VISA_TCP_CONNECT_TIMEOUT 5000 /* ms */ // The delay used for visa id message polling.
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -725,7 +725,7 @@ int main(int argc, char **argv)
             {
                 fdset[0].fd = client_fd;
                 fdset[0].events = POLLIN;
-                const int read_poll = poll(fdset, 1, VISA_ID_WAIT_TIMEOUT);
+                const int read_poll = poll(fdset, 1, VISA_TCP_CONNECT_TIMEOUT);
                 if (read_poll < 0)
                 {
                     GOTO_ERROR("incoming visa id poll error", force_closed);
