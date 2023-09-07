@@ -2384,6 +2384,7 @@ bool verify_pow(const unsigned char *hash, const unsigned char *data, const size
 
 void generate_challenge(unsigned char *challenge, const size_t challenge_len)
 {
+    // Generate random buffer using ssl random bytes generator.
     RAND_bytes(challenge, challenge_len);
 }
 
