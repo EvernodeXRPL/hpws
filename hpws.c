@@ -44,6 +44,7 @@
 #define UDP_MSG_VISA_REQ 2
 #define UDP_MSG_CHALLENGE 3
 #define UDP_MSG_VISA_RES 4
+#define UDP_MSG_VISA_ID 5
 #define VISA_MSG_VERSION 1
 #define VISA_MSG_ACCEPTED 1
 #define VISA_MSG_REJECTED 120 /* Error code are starting from 120 because it'll be passed as ABEND exit code */
@@ -52,6 +53,7 @@
 #define VISA_MSG_TOO_LARGE 123
 #define VISA_MSG_VERSION_MISMATCH 124
 #define VISA_EXPIRY_TIME_SECONDS 60
+#define VISA_ID_WAIT_TIMEOUT 5000 /* ms */ // The delay used for visa id message polling.
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -118,6 +120,7 @@ void block_xor(unsigned char* buf, uint64_t start, uint64_t end, unsigned char* 
 void calculate_pow(const unsigned char *data, const size_t data_len, unsigned char *hash, int *nonce);
 bool verify_pow(const unsigned char *hash, const unsigned char *data, const size_t data_len, const int nonce);
 void generate_challenge(unsigned char *challenge, const size_t challenge_len);
+void generate_visa_id(const uint32_t addr, const unsigned char *challenge, unsigned char *id);
 
 #define UTF8_ACCEPT 0
 #define UTF8_REJECT 1
@@ -212,6 +215,7 @@ int main(int argc, char **argv)
     // UDP visa variables <version(uint16_t)><type(uint8_t)><payload>
     // For client->server messages, <payload> -> <timestamp(int)><data>
     char visa_msg_buf[512];
+    char visa_id[ID_SIZE];
 
     // websocket variables are prefixed with ws_
     unsigned char ws_masking_key[12];
@@ -546,7 +550,9 @@ int main(int argc, char **argv)
                             {
                                 visa_msg_buf[3] = VISA_MSG_ACCEPTED;
                                 generate_challenge(&visa_msg_buf[4], CHALLENGE_SIZE);
-                                visapass_add(addr, VISA_EXPIRY_TIME_SECONDS, ipv4, &visa_msg_buf[4]);
+
+                                generate_visa_id(addr, &visa_msg_buf[4], &visa_id);
+                                visapass_add(&visa_id, VISA_EXPIRY_TIME_SECONDS, &visa_msg_buf[4]);
                                 msg_size += CHALLENGE_SIZE;
                             }
 
@@ -556,7 +562,8 @@ int main(int argc, char **argv)
                         }
                         else if (visa_msg_buf[2] == UDP_MSG_VISA_REQ)
                         {
-                            const unsigned char *challenge_sent = visapass_get_challenge(addr, ipv4);
+                            generate_visa_id(addr, &visa_msg_buf[7], visa_id);
+                            const unsigned char *challenge_sent = visapass_get_challenge(&visa_id);
 
                             // Check for the challenge sent for this client.
                             if (challenge_sent != NULL)
@@ -566,17 +573,17 @@ int main(int argc, char **argv)
                                 if (err_no > 0)
                                     visa_msg_buf[3] = err_no;
                                 // Check for the proof of work in the received data and send approval or rejection accordingly.
-                                else if (verify_pow(&visa_msg_buf[7], challenge_sent, CHALLENGE_SIZE, *(int *)&visa_msg_buf[39]))
+                                else if (verify_pow(&visa_msg_buf[39], challenge_sent, CHALLENGE_SIZE, *(int *)&visa_msg_buf[71]))
                                 {
                                     // Send approval and mark visa as passed if pow is valid.
                                     visa_msg_buf[3] = VISA_MSG_ACCEPTED;
-                                    visapass_pass(addr, ipv4);
+                                    visapass_pass(&visa_id);
                                 }
                                 else
                                 {
                                     // Send rejection and remove visa pass if pow is invalid.
                                     visa_msg_buf[3] = VISA_MSG_REJECTED;
-                                    visapass_remove(addr, ipv4);
+                                    visapass_remove(&visa_id);
                                     fprintf(stderr, "Received invalid visa challenge\n");
                                 }
 
@@ -587,7 +594,7 @@ int main(int argc, char **argv)
                         }
 
                         // Remove visa pass if unhandled message is sent.
-                        visapass_remove(addr, ipv4);
+                        visapass_remove(&visa_id);
                     }
                 }
             }
@@ -625,23 +632,6 @@ int main(int argc, char **argv)
 
             const bool ipv4 = (client_addr.sa.sa_family != AF_INET6);
             const uint32_t *addr = ipv4 ? &client_addr.sin.sin_addr.s_addr : (uint32_t *)&client_addr.sin6.sin6_addr;
-
-            // Check whether visa is approved for this ip.
-            {
-                if (visa_required)
-                {
-                    // Ban if this ip is not whitelisted from visa approval.
-                    if (!visapass_is_passed(addr, ipv4))
-                    {
-                        fprintf(stderr, "Client connection not approved\n");
-                        close(client_fd);
-                        continue;
-                    }
-
-                    // Remove the visa from visa passes.
-                    visapass_remove(addr, ipv4);
-                }
-            }
 
             // Check whether this ip is banned.
             {
@@ -731,6 +721,55 @@ int main(int argc, char **argv)
             control_fd[1] = child_control_fd[2];
             close(listen_sock);
 
+            if (visa_required)
+            {
+                fdset[0].fd = client_fd;
+                fdset[0].events = POLLIN;
+                const int read_poll = poll(fdset, 1, VISA_ID_WAIT_TIMEOUT);
+                if (read_poll < 0)
+                {
+                    GOTO_ERROR("incoming visa id poll error", force_closed);
+                }
+
+                const int bytes_read = read(client_fd, visa_msg_buf, sizeof(visa_msg_buf));
+                if (bytes_read < 1)
+                {
+                    GOTO_ERROR("invalid visa id message", force_closed);
+                }
+                else if (bytes_read > sizeof(visa_msg_buf))
+                {
+                    GOTO_ERROR("too large visa id message", force_closed);
+                }
+                else if (*(uint16_t *)&visa_msg_buf != VISA_MSG_VERSION)
+                {
+                    GOTO_ERROR("visa id message version mismatch", force_closed);
+                }
+                else if (*(int *)&visa_msg_buf[3] <= time(NULL) - VISA_EXPIRY_TIME_SECONDS)
+                {
+                    GOTO_ERROR("too old visa id message", force_closed);
+                }
+
+                if (visa_msg_buf[2] == UDP_MSG_VISA_ID)
+                {
+                    // Check whether visa is approved for this visa id.
+                    // Ban if this visa id is not whitelisted from visa approval.
+                    generate_visa_id(addr, &visa_msg_buf[7], &visa_id);
+                    if (!visapass_is_passed(&visa_id))
+                    {
+                        // Remove the visa from visa passes.
+                        visapass_remove(&visa_id);
+                        GOTO_ERROR("client connection not approved", force_closed);
+                    }
+
+                    // Remove the visa from visa passes.
+                    visapass_remove(&visa_id);
+                }
+                else
+                {
+                    GOTO_ERROR("invalid visa id message", force_closed);
+                }
+            }
+
             // by default, hpws server process is our parent and "reaper".
             // now we assume the consumer (hpws.hpp) is going to become our "reaper" so we double-fork
             // to detach ourselves from hpws server proc.
@@ -802,6 +841,7 @@ int main(int argc, char **argv)
         if (DEBUG)
             fprintf(stderr, "[HPWS.C PID+%08X] ip: %.*s\n", my_pid, sizeof(connect_ip), connect_ip);
 
+        unsigned char challenge[CHALLENGE_SIZE];
         if (visa_required)
         {
             client_fd = socket(res->ai_family, SOCK_DGRAM, 0);
@@ -842,17 +882,20 @@ int main(int argc, char **argv)
                 ABEND(visa_msg_buf[3], "init request rejected from the server");
             }
 
+            memcpy(challenge, &visa_msg_buf[4], CHALLENGE_SIZE);
+
             // Create visa request with the pow and send to the server.
             *(uint16_t *)&visa_msg_buf = VISA_MSG_VERSION;
             visa_msg_buf[2] = UDP_MSG_VISA_REQ;
             int nonce = 0;
             unsigned char hash[SHA256_DIGEST_LENGTH];
-            calculate_pow(&visa_msg_buf[4], CHALLENGE_SIZE, &hash, (int *)&nonce);
+            calculate_pow(&challenge, sizeof(challenge), &hash, (int *)&nonce);
 
             *(int *)&visa_msg_buf[3] = time(NULL);
-            memcpy(&visa_msg_buf[7], &hash, sizeof(hash));
-            *(int *)&visa_msg_buf[39] = nonce;
-            if (sendto(client_fd, &visa_msg_buf, 43, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
+            memcpy(&visa_msg_buf[7], &challenge, sizeof(challenge));
+            memcpy(&visa_msg_buf[39], &hash, sizeof(hash));
+            *(int *)&visa_msg_buf[71] = nonce;
+            if (sendto(client_fd, &visa_msg_buf, 75, MSG_CONFIRM, (struct sockaddr *)&client_addr, client_addr_len) < 0)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Unable to request visa, errno: %d\n", my_pid, errno);
                 close(client_fd);
@@ -900,6 +943,20 @@ int main(int argc, char **argv)
 
         if (DEBUG)
             fprintf(stderr, "[HPWS.C PID+%08X] connected\n", my_pid);
+
+        if (visa_required)
+        {
+            *(uint16_t *)&visa_msg_buf = VISA_MSG_VERSION;
+            visa_msg_buf[2] = UDP_MSG_VISA_ID;
+            *(int *)&visa_msg_buf[3] = time(NULL);
+            memcpy(&visa_msg_buf[7], &challenge, sizeof(challenge));
+            if (write(client_fd, &visa_msg_buf, sizeof(visa_token) + 7) < 0)
+            {
+                fprintf(stderr, "[HPWS.C PID+%08X] Unable to send visa id, errno: %d\n", my_pid, errno);
+                close(client_fd);
+                ABEND(94, "could not send the visa id");
+            }
+        }
 
          ws_state = -2; // this state means we need to send an upgrade request
     }
@@ -2325,6 +2382,18 @@ bool verify_pow(const unsigned char *hash, const unsigned char *data, const size
     return false;
 }
 
-void generate_challenge(unsigned char *challenge, const size_t challenge_len) {
+void generate_challenge(unsigned char *challenge, const size_t challenge_len)
+{
+    // Generate random buffer using ssl random bytes generator.
     RAND_bytes(challenge, challenge_len);
+}
+
+void generate_visa_id(const uint32_t addr, const unsigned char *challenge, unsigned char *id)
+{
+    char buffer[sizeof(addr) + CHALLENGE_SIZE];
+    *(uint32_t *)&buffer = addr;
+    memcpy(&buffer[sizeof(addr)], challenge, CHALLENGE_SIZE);
+
+    // Hash the buffer using SHA-256
+    SHA256((unsigned char *)&buffer, sizeof(buffer), id);
 }
