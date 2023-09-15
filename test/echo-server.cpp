@@ -51,9 +51,9 @@ int echo_server()
                 PRINT_HPWS_ERROR(accept_result);
                 continue;
             }
-            
+
             ([](hpws::client client)
-            {
+             {
 
                 for (;;)
                 {
@@ -72,8 +72,7 @@ int echo_server()
 
                     // Reply with the same message we got.
                     client.write(in_msg);
-                }
-            })(std::get<hpws::client>(std::move(accept_result)));
+                } })(std::get<hpws::client>(std::move(accept_result)));
         }
     }
     else if (std::holds_alternative<hpws::error>(server))
