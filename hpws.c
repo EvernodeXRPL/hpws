@@ -1106,9 +1106,15 @@ int main(int argc, char **argv)
                 ERR_print_errors_fp(stderr);
                 ABEND(111, "could not set ssl cert file");
             }
-            if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) <= 0 ) {
+
+            if (SSL_CTX_use_certificate_chain_file(ctx, cert) <= 0) {
                 ERR_print_errors_fp(stderr);
-                ABEND(112, "could not set ssl key file");
+                ABEND(112, "could not set ssl certificate chain file");
+            }
+
+            if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) <= 0) {
+                ERR_print_errors_fp(stderr);
+                ABEND(113, "could not set ssl key file");
             }
         }
 
