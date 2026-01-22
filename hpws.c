@@ -730,7 +730,31 @@ int main(int argc, char **argv)
                     GOTO_ERROR("incoming visa id poll error", force_closed);
                 }
 
-                const int bytes_read = read(client_fd, visa_msg_buf, sizeof(visa_msg_buf));
+                // Deterministic read of fixed-size VISA packet using SO_RCVTIMEO
+                // to avoid partial reads without altering non-blocking socket mode.
+                struct timeval tv;
+                tv.tv_sec = 5;
+                tv.tv_usec = 0;
+                setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
+                const int VISA_PACKET_SIZE = 2 + 1 + 4 + CHALLENGE_SIZE; 
+                int total_read = 0;
+                while(total_read < VISA_PACKET_SIZE) {
+                    int r = read(client_fd, visa_msg_buf + total_read, VISA_PACKET_SIZE - total_read);
+                    if (r <= 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            GOTO_ERROR("read visa id timeout", force_closed);
+                        }
+                        GOTO_ERROR("read visa id failed", force_closed);
+                    }
+                    total_read += r;
+                }
+                const int bytes_read = total_read;
+
+                tv.tv_sec = 0;
+                tv.tv_usec = 0;
+                setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
                 if (bytes_read < 1)
                 {
                     GOTO_ERROR("invalid visa id message", force_closed);
@@ -949,7 +973,8 @@ int main(int argc, char **argv)
             visa_msg_buf[2] = UDP_MSG_VISA_ID;
             *(int *)&visa_msg_buf[3] = time(NULL);
             memcpy(&visa_msg_buf[7], &challenge, sizeof(challenge));
-            if (write(client_fd, &visa_msg_buf, sizeof(visa_token) + 7) < 0)
+            const int msg_size = 7 + CHALLENGE_SIZE;
+            if (write(client_fd, &visa_msg_buf, msg_size) < 0)
             {
                 fprintf(stderr, "[HPWS.C PID+%08X] Unable to send visa id, errno: %d\n", my_pid, errno);
                 close(client_fd);
@@ -1090,13 +1115,15 @@ int main(int argc, char **argv)
         OpenSSL_add_ssl_algorithms();
 
         {
-            const SSL_METHOD* method = ( is_server ? SSLv23_server_method() : SSLv23_method() );
+            const SSL_METHOD* method = TLS_method();
             ctx = SSL_CTX_new(method);
             if (!ctx) {
                 perror("Unable to create SSL context");
                 ERR_print_errors_fp(stderr);
                 ABEND(110, "could not create ssl context");
             }
+
+            SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
         }
 
         SSL_CTX_set_ecdh_auto(ctx, 1);
@@ -1136,6 +1163,10 @@ int main(int argc, char **argv)
             int n = SSL_do_handshake(ssl);
             ERR_print_errors_fp(stderr);
             int e = SSL_get_error(ssl, n);
+            if (e != SSL_ERROR_WANT_READ && e != SSL_ERROR_WANT_WRITE) {
+                fprintf(stderr, "[HPWS.C PID+%08X] SSL Read Error: %d. System Errno: %d\n", my_pid, e, errno);
+                ERR_print_errors_fp(stderr);
+            }
             SSL_FLUSH_OUT()
         }
     }
@@ -1408,8 +1439,29 @@ int main(int argc, char **argv)
                     // in this state we are server waiting for an upgrade request from client
                     if ( ws_state == 0 )
                     {
-                        // todo: should we loop to ensure a complete http request?
-                        int bytes_read = SSL_read( ssl, ws_buf_decode, ws_buffer_length - 1 );
+                        // fetches the full header
+                        int total = 0;
+                        while (total < ws_buffer_length - 1) {
+                            int r = SSL_read(ssl,
+                                ws_buf_decode + total,
+                                ws_buffer_length - 1 - total);
+
+                            if (r <= 0) {
+                                int err = SSL_get_error(ssl, r);
+                                fprintf(stderr, "SSL_read error during handshake: %d\n", err);
+                                goto client_closed;
+                            }
+
+                            total += r;
+                            ws_buf_decode[total] = 0;
+
+                            if (strstr(ws_buf_decode, "\r\n\r\n")) {
+                                break;
+                            }
+                        }
+
+                        bytes_read = total;
+
                         if (DEBUG)
                             fprintf(stderr, "[HPWS.C PID+%08X] ws_state -2: bytes read: %d\n", my_pid, bytes_read);
                         if (bytes_read <= 0)
